@@ -14,6 +14,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import YarboDataUpdateCoordinator
+from .scheduler import schedule_unique_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,8 +41,22 @@ async def async_setup_entry(
         for ctrl_def in ctrl_defs:
             if ctrl_def.entity_type == "switch":
                 entities.append(YarboConfigSwitch(coordinator, device, ctrl_def))
+        # Per-device global scheduler pause. Always present, even when
+        # zero schedules are configured — gives the user a single place
+        # to halt everything before they create their first schedule.
+        entities.append(YarboSchedulerGlobalSwitch(coordinator, device))
 
     async_add_entities(entities)
+
+    # Per-schedule pause — added per subentry so HA can remove it
+    # surgically when the schedule is deleted.
+    for device in coordinator.devices:
+        for spec in coordinator.schedules_for(device.sn):
+            sub_id = coordinator.subentry_id_for("schedule", spec.get("id"))
+            async_add_entities(
+                [YarboScheduleEnabledSwitch(coordinator, device, spec)],
+                config_subentry_id=sub_id,
+            )
 
 
 class YarboConfigSwitch(
@@ -166,3 +181,110 @@ class YarboConfigSwitch(
             return None
         from yarbo_robot_sdk.device_helpers import extract_field
         return extract_field(device_data, field_path)
+
+
+# ---- Scheduler switches --------------------------------------------------
+
+
+def _scheduler_device_info(device) -> DeviceInfo:
+    return DeviceInfo(
+        identifiers={(DOMAIN, device.sn)},
+        name=device.name,
+        manufacturer="Yarbo",
+        model=device.model,
+        serial_number=device.sn,
+    )
+
+
+class YarboSchedulerGlobalSwitch(
+    CoordinatorEntity[YarboDataUpdateCoordinator], SwitchEntity
+):
+    """Global scheduler pause switch for one device.
+
+    ON  = scheduler is enabled (will fire schedules when conditions pass)
+    OFF = paused (no schedule on this device fires until re-enabled)
+
+    The "ON = enabled" framing matches user intuition for a switch
+    labeled "Scheduler enabled". Per-schedule pause is a separate
+    switch and ANDs with this one.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Scheduler enabled"
+    _attr_icon = "mdi:calendar-clock"
+
+    def __init__(self, coordinator: YarboDataUpdateCoordinator, device) -> None:
+        super().__init__(coordinator)
+        self._device = device
+        self._attr_unique_id = f"{device.sn}_scheduler_enabled"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _scheduler_device_info(self._device)
+
+    @property
+    def is_on(self) -> bool | None:
+        store = self.coordinator.state_store
+        if store is None:
+            return None
+        return store.get_global_enabled(self._device.sn)
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self.coordinator.async_set_global_enabled(self._device.sn, True)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self.coordinator.async_set_global_enabled(self._device.sn, False)
+
+
+class YarboScheduleEnabledSwitch(
+    CoordinatorEntity[YarboDataUpdateCoordinator], SwitchEntity
+):
+    """Per-schedule enable/disable switch.
+
+    ON = this schedule may fire when its conditions pass.
+    OFF = this schedule is permanently held (until re-enabled).
+
+    Use this for "I want to disable mowing the back yard until next
+    season" without deleting the schedule entirely.
+    """
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:calendar-arrow-right"
+
+    def __init__(
+        self,
+        coordinator: YarboDataUpdateCoordinator,
+        device,
+        spec: dict,
+    ) -> None:
+        super().__init__(coordinator)
+        self._device = device
+        self._schedule_id: str = spec["id"]
+        self._plan_name: str = spec.get("plan_name", "")
+        self._attr_unique_id = schedule_unique_id(
+            device.sn, self._schedule_id, "enabled",
+        )
+        self._attr_name = f"Schedule {self._plan_name} enabled"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _scheduler_device_info(self._device)
+
+    @property
+    def is_on(self) -> bool | None:
+        store = self.coordinator.state_store
+        if store is None:
+            return None
+        return store.get_schedule_state(
+            self._device.sn, self._schedule_id,
+        )["enabled"]
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self.coordinator.async_set_schedule_enabled(
+            self._device.sn, self._schedule_id, True,
+        )
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self.coordinator.async_set_schedule_enabled(
+            self._device.sn, self._schedule_id, False,
+        )

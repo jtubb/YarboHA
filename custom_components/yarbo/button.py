@@ -15,6 +15,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import YarboDataUpdateCoordinator
+from .scheduler import schedule_unique_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +43,19 @@ async def async_setup_entry(
         # Recharge button
         entities.append(YarboRechargeButton(coordinator, device))
     async_add_entities(entities)
+
+    # Per-schedule action buttons — added per subentry so HA can
+    # remove them surgically when the user deletes a schedule.
+    for device in coordinator.devices:
+        for spec in coordinator.schedules_for(device.sn):
+            sub_id = coordinator.subentry_id_for("schedule", spec.get("id"))
+            async_add_entities(
+                [
+                    YarboScheduleRunNowButton(coordinator, device, spec),
+                    YarboScheduleSkipNextButton(coordinator, device, spec),
+                ],
+                config_subentry_id=sub_id,
+            )
 
 
 def _device_info(device) -> DeviceInfo:
@@ -184,70 +198,17 @@ class YarboStartPlanButton(
 
     async def async_press(self) -> None:
         sn = self._device.sn
-        data = self.coordinator.data.get(sn, {}) if self.coordinator.data else {}
-
-        # Check 1: Device must be online
-        if not data.get("__online__"):
-            raise HomeAssistantError("Cannot start plan: device is offline")
-
-        # Check 2: Plan must be selected
         plan_id = self.coordinator.get_selected_plan(sn)
         if plan_id is None:
             raise HomeAssistantError("Cannot start plan: no plan selected")
-
-        # Check 3: Not wired charging (BodyMsg.rechargeState: 1=wired charging, 3=wired locked)
-        recharge_state = (data.get("BodyMsg") or {}).get("rechargeState")
-        if isinstance(recharge_state, (int, float)) and recharge_state in (1, 3):
-            raise HomeAssistantError(
-                "Cannot start plan: device is wired charging"
-            )
-
-        # Wireless charging is NOT a blocker: the robot undocks itself
-        # when a plan is issued (matches the Yarbo app's behaviour). We
-        # only refuse wired charging (check 3) because a physical cable
-        # genuinely prevents the robot from moving.
-
-        # Check 5: RTK signal must not be weak (4=Strong, 5=Medium)
-        rtk_status = (data.get("RTKMSG") or {}).get("status")
-        rtk_val = int(rtk_status) if rtk_status is not None else 0
-        if rtk_val not in (4, 5):
-            raise HomeAssistantError(
-                "Cannot start plan: RTK/GPS signal is weak"
-            )
-
-        # Check 6: No plan already running (on_going_planning > 0 and != 5 means active)
-        planning = (data.get("StateMSG") or {}).get("on_going_planning", 0)
-        if isinstance(planning, (int, float)) and planning > 0 and planning != 5:
-            raise HomeAssistantError(
-                "Cannot start plan: a plan is already running"
-            )
-
-        # Check 7: Not returning to charge (on_going_recharging > 0 and != 4)
-        recharging = (data.get("StateMSG") or {}).get("on_going_recharging", 0)
-        if isinstance(recharging, (int, float)) and recharging > 0 and recharging != 4:
-            raise HomeAssistantError(
-                "Cannot start plan: device is returning to charge"
-            )
-
-        # All checks passed — build payload and send
-        payload: dict = {"id": plan_id}
-
-        # Read percent from Plan Start Percent entity via entity registry
+        # Preflight + publish (and last_run stamping for any matching
+        # schedule) is centralized on the coordinator; both this button
+        # and the scheduler tick share the exact same code path.
         percent = self._get_plan_percent()
-        if percent is not None and percent > 0:
-            payload["percent"] = int(percent)
-
-        _LOGGER.info("Starting plan %s for %s: %s", plan_id, sn, payload)
-        try:
-            await self.hass.async_add_executor_job(
-                self.coordinator._client.mqtt_publish_command,
-                sn,
-                self._device.type_id,
-                "start_plan",
-                payload,
-            )
-        except Exception as exc:
-            _LOGGER.error("Failed to start plan: %s", exc)
+        await self.coordinator.async_start_plan(
+            sn, plan_id, percent=int(percent) if percent else None,
+            triggered_by="start_plan_button",
+        )
 
     def _get_plan_percent(self) -> float | None:
         """Read plan start percent from the entity state registry."""
@@ -430,3 +391,103 @@ class YarboRechargeButton(
             )
         except Exception as exc:
             _LOGGER.error("Failed to send recharge command: %s", exc)
+
+
+# ---- Scheduler buttons --------------------------------------------------
+
+
+class YarboScheduleRunNowButton(
+    CoordinatorEntity[YarboDataUpdateCoordinator], ButtonEntity
+):
+    """Trigger one schedule now, bypassing its cooldown.
+
+    Goes through coordinator.async_start_plan_by_name so the same
+    preflight checks apply as for the device's main Start Plan button.
+    last_run is stamped on success, satisfying any future scheduled
+    run on the same plan (no double-run a few minutes later).
+    """
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:play-circle-outline"
+
+    def __init__(
+        self,
+        coordinator: YarboDataUpdateCoordinator,
+        device,
+        spec: dict,
+    ) -> None:
+        super().__init__(coordinator)
+        self._device = device
+        self._schedule_id: str = spec["id"]
+        self._plan_name: str = spec.get("plan_name", "")
+        self._attr_unique_id = schedule_unique_id(
+            device.sn, self._schedule_id, "run_now",
+        )
+        self._attr_name = f"Schedule {self._plan_name} run now"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._device)
+
+    async def async_press(self) -> None:
+        # If a previous attempt at this schedule ended without success,
+        # pick up where it left off rather than re-mowing already-done
+        # area. resume_percent is cleared on the next successful
+        # Completed transition.
+        store = self.coordinator.state_store
+        percent = None
+        if store is not None:
+            pct = store.get_schedule_state(
+                self._device.sn, self._schedule_id,
+            )["resume_percent"]
+            if pct > 0:
+                percent = pct
+        await self.coordinator.async_start_plan_by_name(
+            self._device.sn, self._plan_name, percent=percent,
+            triggered_by="schedule_run_now_button",
+        )
+
+
+class YarboScheduleSkipNextButton(
+    CoordinatorEntity[YarboDataUpdateCoordinator], ButtonEntity
+):
+    """Toggle the per-schedule one-shot skip flag.
+
+    Pressing while skip is OFF sets it ON — the next eligible window is
+    bypassed and the flag clears automatically when the schedule next
+    fires (or when the user toggles it off via the per-schedule pause
+    switch in advance).
+    """
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:skip-next-circle-outline"
+
+    def __init__(
+        self,
+        coordinator: YarboDataUpdateCoordinator,
+        device,
+        spec: dict,
+    ) -> None:
+        super().__init__(coordinator)
+        self._device = device
+        self._schedule_id: str = spec["id"]
+        self._plan_name: str = spec.get("plan_name", "")
+        self._attr_unique_id = schedule_unique_id(
+            device.sn, self._schedule_id, "skip_next",
+        )
+        self._attr_name = f"Schedule {self._plan_name} skip next"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._device)
+
+    async def async_press(self) -> None:
+        store = self.coordinator.state_store
+        if store is None:
+            return
+        current = store.get_schedule_state(
+            self._device.sn, self._schedule_id,
+        )["skip_next"]
+        await self.coordinator.async_set_skip_next(
+            self._device.sn, self._schedule_id, not current,
+        )
