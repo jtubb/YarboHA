@@ -541,8 +541,12 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                         )
 
                 try:
+                    # Public SDK helper (added alongside the _callbacks
+                    # thread-safety fix). Runs entirely in the executor; the
+                    # callback receives (topic_str, payload_bytes).
                     await self.hass.async_add_executor_job(
-                        client.mqtt_subscribe, plan_topic, _on_plan_feedback,
+                        client.subscribe_topic, device.sn, plan_topic,
+                        _on_plan_feedback,
                     )
                 except Exception as err:
                     _LOGGER.warning(
@@ -570,7 +574,8 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
 
                 try:
                     await self.hass.async_add_executor_job(
-                        client.mqtt_subscribe, cloud_topic, _on_cloud_points,
+                        client.subscribe_topic, device.sn, cloud_topic,
+                        _on_cloud_points,
                     )
                 except Exception as err:
                     _LOGGER.warning(
