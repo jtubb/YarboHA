@@ -238,6 +238,11 @@ class YarboPlanSelect(
         running_area_ids = pf.get("areaIds") or []
         actual_clean_area = pf.get("actualCleanArea")
         battery_consumption = pf.get("battery_consumption")
+        # finishIds is the firmware's list of area_ids already completed
+        # in the current run. Combined with running_area_id, the card can
+        # color each area's planned path independently (done / active /
+        # queued).
+        finished_area_ids = pf.get("finishIds") or []
 
         plan_path_geojson = None
         if pf.get("cleanPathProgress"):
@@ -297,6 +302,7 @@ class YarboPlanSelect(
             "plans": plans_out,
             "running_area_id": running_area_id,
             "running_area_ids": running_area_ids,
+            "finished_area_ids": finished_area_ids,
             "actual_clean_area": actual_clean_area,
             "battery_consumption": battery_consumption,
             "plan_path_geojson": plan_path_geojson,
