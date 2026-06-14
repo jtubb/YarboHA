@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+
+# Local graphify knowledge-graph cache (generated)
+graphify-out/
