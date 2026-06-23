@@ -37,7 +37,7 @@ Home Assistant custom integration for Yarbo robot devices. Monitor and control y
 
 ### HACS (Recommended)
 
-1. Open HACS → Custom repositories → Add `https://github.com/YarboInc/YarboHA` (Integration)
+1. Open HACS → Custom repositories → Add `https://github.com/jtubb/YarboHA` (Integration)
 2. Search for "Yarbo" and install
 3. Restart Home Assistant
 
