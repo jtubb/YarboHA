@@ -1224,6 +1224,15 @@ class ZoneRuleSubentryFlow(ConfigSubentryFlow):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None,
     ) -> SubentryFlowResult:
+        """Add path: HA starts subentry add flows at the `user` step."""
+        return await self.async_step_add(user_input)
+
+    async def async_step_add(
+        self, user_input: dict[str, Any] | None = None,
+    ) -> SubentryFlowResult:
+        # The form below renders with step_id="add", and HA dispatches a
+        # form submission back to async_step_<step_id> — so this must
+        # exist under the "add" name, not just as async_step_user.
         return await self._async_form(
             user_input=user_input, step_id="add", existing=None,
         )
