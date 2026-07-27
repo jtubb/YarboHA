@@ -4,22 +4,30 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import timedelta
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import YarboDataUpdateCoordinator
+from .entity_filters import control_matches_device
+from .scheduler import schedule_unique_id
 
 _LOGGER = logging.getLogger(__name__)
 
 # Seconds to ignore coordinator updates after sending a command,
 # preventing UI flicker from stale DeviceMSG data.
-COMMAND_COOLDOWN_SECONDS = 5
+COMMAND_COOLDOWN_SECONDS = 15
+FOLLOW_KEEPALIVE_INTERVAL = timedelta(seconds=5)
+FOLLOW_STATE_PATH = "StateMSG.robot_follow_state"
+FOLLOW_STATE_TOPIC = "set_follow_state"
 
 
 async def async_setup_entry(
@@ -38,10 +46,26 @@ async def async_setup_entry(
             get_control_field_definitions, device.type_id
         )
         for ctrl_def in ctrl_defs:
-            if ctrl_def.entity_type == "switch":
+            if ctrl_def.entity_type == "switch" and control_matches_device(
+                coordinator, device, ctrl_def
+            ):
                 entities.append(YarboConfigSwitch(coordinator, device, ctrl_def))
+        # Per-device global scheduler pause. Always present, even when
+        # zero schedules are configured — gives the user a single place
+        # to halt everything before they create their first schedule.
+        entities.append(YarboSchedulerGlobalSwitch(coordinator, device))
 
     async_add_entities(entities)
+
+    # Per-schedule pause — added per subentry so HA can remove it
+    # surgically when the schedule is deleted.
+    for device in coordinator.devices:
+        for spec in coordinator.schedules_for(device.sn):
+            sub_id = coordinator.subentry_id_for("schedule", spec.get("id"))
+            async_add_entities(
+                [YarboScheduleEnabledSwitch(coordinator, device, spec)],
+                config_subentry_id=sub_id,
+            )
 
 
 class YarboConfigSwitch(
@@ -56,6 +80,7 @@ class YarboConfigSwitch(
         self._device = device
         self._ctrl_def = ctrl_def
         self._command_sent_at: float = 0  # monotonic timestamp of last command
+        self._follow_keepalive_unsub: CALLBACK_TYPE | None = None
 
         path_key = ctrl_def.path.replace(".", "_").replace("__", "").lower()
         self._attr_unique_id = f"{device.sn}_{path_key}_switch"
@@ -65,6 +90,13 @@ class YarboConfigSwitch(
 
         if ctrl_def.icon:
             self._attr_icon = ctrl_def.icon
+
+    @property
+    def _is_follow_mode_switch(self) -> bool:
+        return (
+            self._ctrl_def.path == FOLLOW_STATE_PATH
+            and self._ctrl_def.command_topic == FOLLOW_STATE_TOPIC
+        )
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -104,28 +136,106 @@ class YarboConfigSwitch(
         self._attr_is_on = True
         self.async_write_ha_state()
         await self._async_send_command(True)
+        self._start_follow_keepalive()
 
     async def async_turn_off(self, **kwargs) -> None:
         """Turn off the switch."""
+        self._stop_follow_keepalive()
         self._attr_is_on = False
         self.async_write_ha_state()
         await self._async_send_command(False)
 
-    async def _async_send_command(self, turn_on: bool) -> None:
-        """Build and send the MQTT command payload."""
-        self._command_sent_at = time.monotonic()
-        payload = self._build_payload(turn_on)
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up timers when Home Assistant unloads the entity."""
+        self._stop_follow_keepalive()
+
+    async def _async_send_command(
+        self,
+        turn_on: bool,
+        *,
+        raise_errors: bool = True,
+        update_cooldown: bool = True,
+    ) -> None:
+        """Send the MQTT command, routing through typed SDK methods where available."""
+        if update_cooldown:
+            self._command_sent_at = time.monotonic()
         try:
+            bound = self.coordinator.bound_device(self._device.sn)
+            if bound is not None and await self._dispatch_typed(bound, turn_on):
+                return
+            # fallback: use core.publish_command for builders without a typed method
+            payload = self._build_payload(turn_on)
+            _LOGGER.debug(
+                "[switch] publish sn=%s topic=%s payload=%s",
+                self._device.sn, self._ctrl_def.command_topic, payload,
+            )
             await self.hass.async_add_executor_job(
-                self.coordinator._client.mqtt_publish_command,
+                self.coordinator._client.core.publish_command,
                 self._device.sn,
-                self._device.type_id,
                 self._ctrl_def.command_topic,
                 payload,
+                self._device.type_id,
             )
         except Exception as exc:
-            _LOGGER.error("[switch] mqtt_publish_command FAILED: %s", exc)
+            _LOGGER.error("[switch] command FAILED: %s", exc)
             self._handle_coordinator_update()
+            if not raise_errors:
+                return
+            raise HomeAssistantError(
+                f"Failed to send {self._ctrl_def.name} command: {exc}"
+            ) from exc
+
+    async def _dispatch_typed(self, bound, turn_on: bool) -> bool:
+        """Route to a typed SDK method. Returns True if dispatched."""
+        builder = self._ctrl_def.command_builder
+        if builder == "sound_switch":
+            current_vol = self._get_sibling_value("StateMSG.volume")
+            vol = round(float(current_vol), 1) if current_vol is not None else 1.0
+            await self.hass.async_add_executor_job(
+                bound.core.set_sound_param, turn_on, vol
+            )
+            return True
+        if builder == "light_switch":
+            await self.hass.async_add_executor_job(bound.core.set_headlight, turn_on)
+            return True
+        if builder == "person_detection_switch":
+            await self.hass.async_add_executor_job(bound.core.set_person_detect, turn_on)
+            return True
+        if builder == "state_int_switch" and self._ctrl_def.command_topic == "set_follow_state":
+            await self.hass.async_add_executor_job(bound.core.set_follow_state, turn_on)
+            return True
+        if builder == "state_bool_switch" and self._ctrl_def.command_topic == "set_child_lock":
+            await self.hass.async_add_executor_job(bound.core.set_child_lock, turn_on)
+            return True
+        if builder == "geo_fence_switch":
+            await self.hass.async_add_executor_job(bound.core.save_global_params, turn_on)
+            return True
+        if builder == "ignore_obstacles_switch":
+            await self.hass.async_add_executor_job(bound.core.set_map_obstacle_switch, turn_on)
+            return True
+        return False
+
+    def _start_follow_keepalive(self) -> None:
+        """Keep Follow Mode alive; the mobile app republishes this command too."""
+        if not self._is_follow_mode_switch or self._follow_keepalive_unsub is not None:
+            return
+        self._follow_keepalive_unsub = async_track_time_interval(
+            self.hass, self._async_follow_keepalive, FOLLOW_KEEPALIVE_INTERVAL
+        )
+
+    def _stop_follow_keepalive(self) -> None:
+        if self._follow_keepalive_unsub is None:
+            return
+        self._follow_keepalive_unsub()
+        self._follow_keepalive_unsub = None
+
+    async def _async_follow_keepalive(self, _now) -> None:
+        if self._attr_is_on is not True:
+            self._stop_follow_keepalive()
+            return
+        await self._async_send_command(
+            True, raise_errors=False, update_cooldown=False
+        )
 
     def _build_payload(self, turn_on: bool) -> dict:
         """Build command payload based on command_builder type."""
@@ -135,17 +245,20 @@ class YarboConfigSwitch(
             vol = round(float(current_vol), 1) if current_vol is not None else 1.0
             return {"enable": turn_on, "vol": vol, "mode": 0}
         elif builder == "light_switch":
-            val = 255 if turn_on else 0
-            return {
-                "body_left_r": val,
-                "body_right_r": val,
-                "led_head": val,
-                "led_left_w": val,
-                "led_right_w": val,
-                "tail_left_r": val,
-                "tail_right_r": val,
-            }
-        return {}
+            return {"led_head": 1 if turn_on else 0}
+        elif builder == "person_detection_switch":
+            return {"state": 1 if turn_on else 0}
+        elif builder == "state_int_switch":
+            return {"state": 1 if turn_on else 0}
+        elif builder == "state_bool_switch":
+            return {"state": turn_on}
+        elif builder == "geo_fence_switch":
+            return {"id": 1, "enable_elec_fence": turn_on}
+        elif builder == "ignore_obstacles_switch":
+            return {"switch": 1 if turn_on else 0}
+        raise HomeAssistantError(
+            f"Unsupported switch command builder: {builder}"
+        )
 
     def _get_state_value(self):
         """Extract current state value from coordinator data."""
@@ -166,3 +279,110 @@ class YarboConfigSwitch(
             return None
         from yarbo_robot_sdk.device_helpers import extract_field
         return extract_field(device_data, field_path)
+
+
+# ---- Scheduler switches --------------------------------------------------
+
+
+def _scheduler_device_info(device) -> DeviceInfo:
+    return DeviceInfo(
+        identifiers={(DOMAIN, device.sn)},
+        name=device.name,
+        manufacturer="Yarbo",
+        model=device.model,
+        serial_number=device.sn,
+    )
+
+
+class YarboSchedulerGlobalSwitch(
+    CoordinatorEntity[YarboDataUpdateCoordinator], SwitchEntity
+):
+    """Global scheduler pause switch for one device.
+
+    ON  = scheduler is enabled (will fire schedules when conditions pass)
+    OFF = paused (no schedule on this device fires until re-enabled)
+
+    The "ON = enabled" framing matches user intuition for a switch
+    labeled "Scheduler enabled". Per-schedule pause is a separate
+    switch and ANDs with this one.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Scheduler enabled"
+    _attr_icon = "mdi:calendar-clock"
+
+    def __init__(self, coordinator: YarboDataUpdateCoordinator, device) -> None:
+        super().__init__(coordinator)
+        self._device = device
+        self._attr_unique_id = f"{device.sn}_scheduler_enabled"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _scheduler_device_info(self._device)
+
+    @property
+    def is_on(self) -> bool | None:
+        store = self.coordinator.state_store
+        if store is None:
+            return None
+        return store.get_global_enabled(self._device.sn)
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self.coordinator.async_set_global_enabled(self._device.sn, True)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self.coordinator.async_set_global_enabled(self._device.sn, False)
+
+
+class YarboScheduleEnabledSwitch(
+    CoordinatorEntity[YarboDataUpdateCoordinator], SwitchEntity
+):
+    """Per-schedule enable/disable switch.
+
+    ON = this schedule may fire when its conditions pass.
+    OFF = this schedule is permanently held (until re-enabled).
+
+    Use this for "I want to disable mowing the back yard until next
+    season" without deleting the schedule entirely.
+    """
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:calendar-arrow-right"
+
+    def __init__(
+        self,
+        coordinator: YarboDataUpdateCoordinator,
+        device,
+        spec: dict,
+    ) -> None:
+        super().__init__(coordinator)
+        self._device = device
+        self._schedule_id: str = spec["id"]
+        self._plan_name: str = spec.get("plan_name", "")
+        self._attr_unique_id = schedule_unique_id(
+            device.sn, self._schedule_id, "enabled",
+        )
+        self._attr_name = f"Schedule {self._plan_name} enabled"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _scheduler_device_info(self._device)
+
+    @property
+    def is_on(self) -> bool | None:
+        store = self.coordinator.state_store
+        if store is None:
+            return None
+        return store.get_schedule_state(
+            self._device.sn, self._schedule_id,
+        )["enabled"]
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self.coordinator.async_set_schedule_enabled(
+            self._device.sn, self._schedule_id, True,
+        )
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self.coordinator.async_set_schedule_enabled(
+            self._device.sn, self._schedule_id, False,
+        )

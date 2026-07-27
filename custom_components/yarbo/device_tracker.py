@@ -118,6 +118,13 @@ class YarboDeviceTracker(
         attrs["position_x"] = extract_field(device_data, "CombinedOdom.x")
         attrs["position_y"] = extract_field(device_data, "CombinedOdom.y")
         attrs["heading"] = extract_field(device_data, "CombinedOdom.phi")
+        # position_z: relative meters above the dock reference, derived
+        # from the live RTK fix (lat_lon_hight). position_z_msl is the
+        # absolute altitude. Both stay frozen at the last good reading
+        # when the mower is docked or RTK-degraded.
+        z_rel, z_msl = self.coordinator.position_z_for(self._device.sn)
+        attrs["position_z"] = z_rel
+        attrs["position_z_msl"] = z_msl
         return attrs
 
     @callback

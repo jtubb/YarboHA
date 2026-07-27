@@ -1,0 +1,453 @@
+# Service definitions for the Yarbo integration. Used by HA's
+# Developer Tools → Services UI for in-app documentation. The actual
+# service handler is registered in __init__.py.
+
+set_nogozone_enabled:
+  name: Set no-go zone enabled
+  description: >
+    Enable or disable a single no-go zone on a Yarbo device. Enabled =
+    the zone is BLOCKING the mower (default behaviour). Disabled = the
+    mower is allowed to drive through.
+  fields:
+    device_id:
+      name: Device
+      description: The Yarbo device whose zone you want to toggle.
+      required: true
+      selector:
+        device:
+          integration: yarbo
+    zone_id:
+      name: Zone ID
+      description: >
+        Numeric or string zone ID, as exposed in the mapZones sensor's
+        nogo_zones attribute.
+      required: true
+      example: 1408
+      selector:
+        text:
+    enabled:
+      name: Enabled
+      description: True to block the zone, False to release it.
+      required: true
+      default: true
+      selector:
+        boolean:
+
+export_altitude_mesh:
+  name: Export altitude mesh
+  description: >
+    Dump the per-area altitude sample buffer to JSON files in the
+    config directory. One file per device at yarbo_altitude_<sn>.json.
+    Schema: areas → list of [lat, lon, z_msl, ts] (degrees, meters,
+    unix seconds). Returns the per-area sample counts as the service
+    response. Suitable for Delaunay triangulation downstream.
+
+get_altitude_mesh:
+  name: Get altitude mesh
+  description: >
+    Return the per-area altitude sample buffer as the service response
+    (no file writes). Used by the Yarbo card's terrain mesh view.
+
+clear_altitude_area:
+  name: Clear altitude area
+  description: >
+    Wipe one area's mesh samples from the buffer. Use area_id="*" to
+    wipe everything. Useful when a transit-tagged area pollutes the
+    store.
+  fields:
+    area_id:
+      name: Area ID
+      description: >
+        The cleanAreaId to wipe, or "*" to clear all areas.
+      required: true
+      example: "18"
+      selector:
+        text:
+    device_sn:
+      name: Device serial (optional)
+      description: >
+        Limit the wipe to one device. Omit to clear across all managed
+        devices.
+      required: false
+      selector:
+        text:
+
+probe_topic:
+  name: Probe MQTT command topic
+  description: >
+    Diagnostic — publish a payload to snowbot/<sn>/app/<topic_name>
+    (bypassing the SDK's known-topic list) and wait up to `timeout`
+    seconds for a matching data_feedback response. Returns the
+    response if any, plus any other inner topics seen during the
+    window. USE WITH CARE — a successful probe may mutate device
+    state.
+  fields:
+    device_id:
+      name: Device
+      description: The Yarbo device to probe.
+      required: true
+      selector:
+        device:
+          integration: yarbo
+    topic_name:
+      name: Topic name
+      description: >
+        Bare command name (no prefix). E.g. "save_plan",
+        "update_plan". Will be published as
+        snowbot/<sn>/app/<topic_name>.
+      required: true
+      example: save_plan
+      selector:
+        text:
+    payload:
+      name: Payload (dict)
+      description: >
+        JSON-style dict to send as the command body. For save_plan
+        probes, mirror the read_all_plan reply format with fake IDs.
+      required: false
+      example: '{"data": [{"id": 99999, "name": "PROBE", "areaIds": [], "enable_self_order": false}]}'
+      selector:
+        object:
+    timeout:
+      name: Timeout (seconds)
+      description: How long to wait for a matching feedback.
+      required: false
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 60
+    response_topic:
+      name: Response topic name (override)
+      description: >
+        By default we expect the feedback `topic` field to mirror the
+        command name. Set this if you've observed a different reply
+        name for this command.
+      required: false
+      selector:
+        text:
+
+probe_topics_batch:
+  name: Probe MQTT topics (batch)
+  description: >
+    Run probe_topic for each name in topic_names with the same
+    payload. Returns a summary map and per-topic detail. Spaces probes
+    by `inter_probe_delay` seconds so the broker / firmware can settle
+    between attempts.
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+    topic_names:
+      name: Topic names
+      description: List of bare command names to try.
+      required: true
+      example: '["save_plan", "create_plan", "update_plan", "set_plan", "save_all_plan", "write_plan"]'
+      selector:
+        object:
+    payload:
+      name: Payload (dict)
+      description: Same payload sent to every probe.
+      required: false
+      selector:
+        object:
+    timeout:
+      name: Per-probe timeout (seconds)
+      required: false
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 30
+    inter_probe_delay:
+      name: Delay between probes (seconds)
+      required: false
+      default: 1.5
+      selector:
+        number:
+          min: 0
+          max: 10
+
+# ---------------------------------------------------------------------
+# CRUD services for plans / clean areas / no-go zones / no-vision zones
+# These wrap MQTT topics discovered via direct broker probing — they
+# aren't declared in the published yarbo_robot_sdk.
+# ---------------------------------------------------------------------
+
+list_plans:
+  name: List plans
+  description: >
+    Returns the full list of plans (id, name, areaIds, enable_self_order).
+    Plans are named groupings of map areas that can be started together.
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+
+save_plan:
+  name: Save plan
+  description: >
+    Create or update a plan. Provide `id` to update an existing plan;
+    omit `id` (or supply 0) to create a new one with the next free id
+    assigned by the firmware.
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+    id:
+      name: Plan ID (optional)
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1000000
+    name:
+      name: Name
+      required: true
+      selector:
+        text:
+    area_ids:
+      name: Area IDs
+      description: List of clean_area ids the plan covers.
+      required: true
+      example: "[4, 9, 15]"
+      selector:
+        object:
+    enable_self_order:
+      name: Enable self ordering
+      required: false
+      default: false
+      selector:
+        boolean:
+
+delete_plan:
+  name: Delete plan
+  description: Remove a plan by id. Only positive integer ids are accepted.
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+    id:
+      name: Plan ID
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 1000000
+
+list_clean_areas:
+  name: List clean areas
+  description: >
+    Summary of all mowable areas (id, name, area_m2, vertex count).
+    Use read_clean_area for the full polygon record.
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+
+read_clean_area:
+  name: Read clean area
+  description: Full clean_area record (including polygon range) for one id.
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+    id:
+      name: Area ID
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 1000000
+
+save_clean_area:
+  name: Save clean area
+  description: >
+    Create or update a clean_area. `area` is the full record returned by
+    read_clean_area — at minimum `id`, `name`, `range`, and `ref`.
+    Malformed polygons can confuse the route planner.
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+    area:
+      name: Area record
+      required: true
+      selector:
+        object:
+
+delete_clean_area:
+  name: Delete clean area
+  description: Remove a clean_area by id. Breaks any plan that references it.
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+    id:
+      name: Area ID
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 1000000
+
+list_nogo_zones:
+  name: List no-go zones
+  description: All no-go zones (id, name, enable, vertex count).
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+
+save_nogo_zone:
+  name: Save no-go zone
+  description: Create or update a no-go zone (full zone record).
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+    zone:
+      name: Zone record
+      required: true
+      selector:
+        object:
+
+delete_nogo_zone:
+  name: Delete no-go zone
+  description: Remove a no-go zone by id.
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+    id:
+      name: Zone ID
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 1000000
+
+list_novision_zones:
+  name: List no-vision zones
+  description: All no-vision zones (vision-avoidance suspend regions).
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+
+save_novision_zone:
+  name: Save no-vision zone
+  description: Create or update a no-vision zone.
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+    zone:
+      name: Zone record
+      required: true
+      selector:
+        object:
+
+delete_novision_zone:
+  name: Delete no-vision zone
+  description: Remove a no-vision zone by id.
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+    id:
+      name: Zone ID
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 1000000
+
+goto_waypoints:
+  name: Go to waypoints
+  description: >
+    Drive the mower through a sequence of waypoints in CombinedOdom
+    local meters. Uses the firmware's start_way_point primitive
+    (planId=9999 sentinel — no plan or area is engaged, no accessory
+    runs). The firmware validates the proposed path against no-go
+    zones; a path crossing one returns planning_status=-23 and the
+    mower won't move.
+  fields:
+    device_id:
+      name: Device
+      required: true
+      selector:
+        device:
+          integration: yarbo
+    points:
+      name: Waypoints
+      description: >
+        List of {x, y, phi} dicts in local meters / radians. phi is
+        optional (default 0.0).
+      required: true
+      example: '[{"x": -23.5, "y": -1.2, "phi": 0.0}, {"x": -26.0, "y": -1.2, "phi": 3.14}]'
+      selector:
+        object:
+    type:
+      name: Type hint
+      description: >
+        0=transit (default), 1=in-area, 2=dead-end. At meter-scale
+        the three behave essentially identically; the firmware
+        always plans its own route from the waypoints.
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 2
+    wake:
+      name: Wake first
+      description: >
+        Send two set_working_state=1 pulses before the waypoint
+        command. Disable if the device is already awake.
+      required: false
+      default: true
+      selector:
+        boolean:

@@ -39,10 +39,21 @@
   "options": {
     "step": {
       "init": {
-        "title": "Manage Devices",
-        "description": "Select which Yarbo devices to monitor in Home Assistant.",
+        "title": "Yarbo options",
+        "description": "Account-level settings. Schedules and zone rules are managed via the device card on your dashboard — click 'Add subentry' there.",
+        "menu_options": {
+          "select_devices": "Select devices"
+        }
+      },
+      "select_devices": {
+        "title": "Manage devices",
+        "description": "Select which Yarbo devices to monitor and how Home Assistant keeps them awake.",
         "data": {
-          "selected_devices": "Devices"
+          "selected_devices": "Devices",
+          "keep_awake_mode": "Keep-awake policy"
+        },
+        "data_description": {
+          "keep_awake_mode": "Always: HA renews the wake-up every 4 minutes so the device never sleeps. Only while charging: wake-up is renewed only while the device is charging on the dock. Never: HA never wakes the device automatically; data updates only while the device is awake on its own."
         }
       }
     },
@@ -50,6 +61,327 @@
       "no_devices_selected": "Please select at least one device.",
       "no_devices_found": "No devices found for this account.",
       "fetch_devices_failed": "Failed to fetch device list. Please try again."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "schedule_status": {
+        "state": {
+          "eligible": "Eligible",
+          "cooldown": "Cooldown",
+          "paused": "Paused",
+          "skipped": "Skip queued",
+          "weather": "Weather hold",
+          "sleep": "Quiet hours",
+          "battery": "Battery low",
+          "presence": "Presence hold",
+          "robot-offline": "Robot offline",
+          "robot-busy": "Robot busy",
+          "wrong-head": "Wrong attachment",
+          "snow-insufficient": "Awaiting snow",
+          "unknown": "Unknown"
+        }
+      },
+      "zone_rule_status": {
+        "state": {
+          "paused": "Paused",
+          "idle": "Idle",
+          "awaiting": "Awaiting rain",
+          "engaged": "Engaged (zones locked)",
+          "released": "Released"
+        }
+      }
+    }
+  },
+  "config_subentries": {
+    "schedule": {
+      "initiate_flow": {
+        "user": "Add a schedule",
+        "reconfigure": "Edit schedule"
+      },
+      "entry_type": "Schedule",
+      "step": {
+        "pick_preset": {
+          "title": "Pick a starting preset",
+          "description": "All presets are starting points — you'll customize the plan and any other settings on the next screen before saving.",
+          "data": {
+            "preset": "Preset"
+          }
+        },
+        "add": {
+          "title": "Add schedule",
+          "description": "Pick a plan and the conditions under which it should run automatically. Schedules are evaluated once per minute; a run fires only when every condition passes. Expand the sections below to configure quiet hours, conditions, and notifications.",
+          "sections": {
+            "schedule": {
+              "name": "Plan & frequency",
+              "data": {
+                "plan": "Plan",
+                "interval_days": "Minimum days between runs"
+              },
+              "data_description": {
+                "plan": "Which Yarbo plan this schedule fires.",
+                "interval_days": "Soonest the next run can fire after the last successful completion. Decimals OK (0.5 = 12h). 0 = no cooldown (rely on other gates like snow accumulation)."
+              }
+            },
+            "quiet_hours": {
+              "name": "Quiet hours",
+              "data": {
+                "sleep_start": "Quiet hours — start",
+                "sleep_end": "Quiet hours — end",
+                "use_sun_for_sleep": "Also block when the sun is below the threshold"
+              },
+              "data_description": {
+                "sleep_start": "Local time. Cross-midnight ranges (22:00 \u2192 06:00) work as expected.",
+                "sleep_end": "Local time. Equal to start = always awake.",
+                "use_sun_for_sleep": "When on, the sun-elevation threshold (in Advanced) also gates the run."
+              }
+            },
+            "conditions": {
+              "name": "Conditions",
+              "data": {
+                "weather_entity": "Weather entity (optional)",
+                "weather_hold_states": "Weather states that block a run",
+                "battery_min_pct": "Minimum battery percent",
+                "presence_entities": "Presence entities (held when any is 'home')",
+                "required_head_type": "Required attachment (head)",
+                "min_snow_accumulation": "Minimum forecast snow before run",
+                "rain_rate_entity": "Rain rate sensor (optional)",
+                "rain_rate_max": "Maximum rain rate before holding"
+              },
+              "data_description": {
+                "weather_entity": "HA weather entity. Hold runs when its state is in the list below.",
+                "weather_hold_states": "Conditions that block the run. Add custom values for non-standard providers.",
+                "battery_min_pct": "Hold the run if battery is below this. The mower will recharge then re-evaluate next tick.",
+                "presence_entities": "Hold while any selected person/device_tracker/zone is 'home'. Useful for skipping when guests are over.",
+                "required_head_type": "Hold the run unless this attachment is currently installed. Substring match, case-insensitive (e.g. 'mower' matches both Mower and Mower Pro).",
+                "min_snow_accumulation": "Hold the run unless the weather entity's forecast over the lookahead window has at least this much snow. Same units as the entity reports. 0 = no gate.",
+                "rain_rate_entity": "Numeric sensor for the rain gate. Use the Yarbo onboard 'Rain sensor' (enable it in entity settings — it's off by default) for the mower's own reading, or any external rate sensor (e.g. sensor.openweathermap_rain). Complements the state-based weather entity above.",
+                "rain_rate_max": "Hold the run while the rain sensor reads at or above this value. Units depend on the sensor: external rate sensors are typically in/h or mm/h; the Yarbo onboard sensor is a 0–1000+ ADC reading where higher = wetter. 0 = gate disabled."
+              }
+            },
+            "notifications": {
+              "name": "Notifications & post-event",
+              "data": {
+                "pre_run_notify_target": "Notify on start",
+                "complete_notify_target": "Notify on complete",
+                "post_hold_run": "Run once after weather hold clears (cleanup)"
+              },
+              "data_description": {
+                "pre_run_notify_target": "HA notify services called when this schedule starts a run. Multi-select; pick zero or more (e.g. notify.mobile_app_phone, notify.email). Custom services can be typed in.",
+                "complete_notify_target": "HA notify services called when this schedule's run ends — successful, stopped, or errored. Multi-select.",
+                "post_hold_run": "When weather transitions from holding \u2192 clear, fire one extra cleanup run. Bypasses cooldown + weather + snow gates for that one fire."
+              }
+            },
+            "advanced": {
+              "name": "Advanced",
+              "data": {
+                "sun_elevation_threshold": "Sun elevation threshold (degrees)",
+                "snow_forecast_hours": "Snow forecast lookahead",
+                "pre_run_notify_minutes": "Pre-run notification lead time"
+              },
+              "data_description": {
+                "sun_elevation_threshold": "Negative = below horizon. \u22126\u00b0 = civil twilight; useful for 'after dusk'. Only applies when 'Use sun for sleep' is enabled.",
+                "snow_forecast_hours": "How far ahead to sum forecast precipitation for the snow gate. Only applies when 'Minimum forecast snow' is > 0.",
+                "pre_run_notify_minutes": "Reserved for a future delayed-pre-run mode. Currently ignored — the start notification fires when the run begins."
+              }
+            }
+          }
+        },
+        "reconfigure": {
+          "title": "Edit schedule",
+          "description": "Update the schedule. Run history (last_run, skip flag) is preserved.",
+          "sections": {
+            "schedule": {
+              "name": "Plan & frequency",
+              "data": {
+                "plan": "Plan",
+                "interval_days": "Minimum days between runs"
+              },
+              "data_description": {
+                "plan": "Which Yarbo plan this schedule fires.",
+                "interval_days": "Soonest the next run can fire after the last successful completion. Decimals OK (0.5 = 12h). 0 = no cooldown (rely on other gates like snow accumulation)."
+              }
+            },
+            "quiet_hours": {
+              "name": "Quiet hours",
+              "data": {
+                "sleep_start": "Quiet hours — start",
+                "sleep_end": "Quiet hours — end",
+                "use_sun_for_sleep": "Also block when the sun is below the threshold"
+              },
+              "data_description": {
+                "sleep_start": "Local time. Cross-midnight ranges (22:00 \u2192 06:00) work as expected.",
+                "sleep_end": "Local time. Equal to start = always awake.",
+                "use_sun_for_sleep": "When on, the sun-elevation threshold (in Advanced) also gates the run."
+              }
+            },
+            "conditions": {
+              "name": "Conditions",
+              "data": {
+                "weather_entity": "Weather entity (optional)",
+                "weather_hold_states": "Weather states that block a run",
+                "battery_min_pct": "Minimum battery percent",
+                "presence_entities": "Presence entities (held when any is 'home')",
+                "required_head_type": "Required attachment (head)",
+                "min_snow_accumulation": "Minimum forecast snow before run",
+                "rain_rate_entity": "Rain rate sensor (optional)",
+                "rain_rate_max": "Maximum rain rate before holding"
+              },
+              "data_description": {
+                "weather_entity": "HA weather entity. Hold runs when its state is in the list below.",
+                "weather_hold_states": "Conditions that block the run. Add custom values for non-standard providers.",
+                "battery_min_pct": "Hold the run if battery is below this. The mower will recharge then re-evaluate next tick.",
+                "presence_entities": "Hold while any selected person/device_tracker/zone is 'home'. Useful for skipping when guests are over.",
+                "required_head_type": "Hold the run unless this attachment is currently installed. Substring match, case-insensitive (e.g. 'mower' matches both Mower and Mower Pro).",
+                "min_snow_accumulation": "Hold the run unless the weather entity's forecast over the lookahead window has at least this much snow. Same units as the entity reports. 0 = no gate.",
+                "rain_rate_entity": "Numeric sensor for the rain gate. Use the Yarbo onboard 'Rain sensor' (enable it in entity settings — it's off by default) for the mower's own reading, or any external rate sensor (e.g. sensor.openweathermap_rain). Complements the state-based weather entity above.",
+                "rain_rate_max": "Hold the run while the rain sensor reads at or above this value. Units depend on the sensor: external rate sensors are typically in/h or mm/h; the Yarbo onboard sensor is a 0–1000+ ADC reading where higher = wetter. 0 = gate disabled."
+              }
+            },
+            "notifications": {
+              "name": "Notifications & post-event",
+              "data": {
+                "pre_run_notify_target": "Notify on start",
+                "complete_notify_target": "Notify on complete",
+                "post_hold_run": "Run once after weather hold clears (cleanup)"
+              },
+              "data_description": {
+                "pre_run_notify_target": "HA notify services called when this schedule starts a run. Multi-select.",
+                "complete_notify_target": "HA notify services called when this schedule's run ends — successful, stopped, or errored. Multi-select.",
+                "post_hold_run": "When weather transitions from holding \u2192 clear, fire one extra cleanup run. Bypasses cooldown + weather + snow gates for that one fire."
+              }
+            },
+            "advanced": {
+              "name": "Advanced",
+              "data": {
+                "sun_elevation_threshold": "Sun elevation threshold (degrees)",
+                "snow_forecast_hours": "Snow forecast lookahead",
+                "pre_run_notify_minutes": "Pre-run notification lead time"
+              },
+              "data_description": {
+                "sun_elevation_threshold": "Negative = below horizon. \u22126\u00b0 = civil twilight; useful for 'after dusk'. Only applies when 'Use sun for sleep' is enabled.",
+                "snow_forecast_hours": "How far ahead to sum forecast precipitation for the snow gate. Only applies when 'Minimum forecast snow' is > 0.",
+                "pre_run_notify_minutes": "Reserved for a future delayed-pre-run mode. Currently ignored — the start notification fires when the run begins."
+              }
+            }
+          }
+        }
+      },
+      "error": {
+        "no_plans_loaded": "No plans available yet. Wait a few seconds for the integration to fetch them, then try again.",
+        "invalid_plan": "Pick a plan from the dropdown.",
+        "plan_not_found": "That plan no longer exists on the device. Pick a different one."
+      },
+      "abort": {
+        "reconfigure_successful": "Schedule updated."
+      }
+    },
+    "zone_rule": {
+      "initiate_flow": {
+        "user": "Add a zone rule",
+        "reconfigure": "Edit zone rule"
+      },
+      "entry_type": "Zone rule",
+      "step": {
+        "add": {
+          "title": "Add zone rule",
+          "description": "Auto-enable selected no-go zones based on a trigger condition, releasing them after a rolling grace period.",
+          "data": {
+            "name": "Rule name",
+            "zones": "Zones to lock",
+            "trigger_type": "Trigger type",
+            "duration_hours": "Duration after trigger ends to keep enabled"
+          },
+          "data_description": {
+            "name": "Display label for this rule.",
+            "zones": "No-go zones that get enabled while the rule is engaged. Pick zones from a single device.",
+            "trigger_type": "What activates this rule. Precipitation = accumulated rain/snow rate. Presence = while any selected entity is 'home'.",
+            "duration_hours": "Rolling timer. Each tick the trigger is still active, the timer resets to this value. When it elapses, zones are released."
+          },
+          "sections": {
+            "precipitation_settings": {
+              "name": "Precipitation trigger",
+              "data": {
+                "rate_entity": "Precipitation rate sensor",
+                "event_threshold": "Accumulation threshold to engage",
+                "dry_reset_hours": "Reset accumulator after this much dry time"
+              },
+              "data_description": {
+                "rate_entity": "A sensor reporting current rate (e.g. sensor.openweathermap_rain). Required when trigger type = Precipitation.",
+                "event_threshold": "Same units as the rate sensor. Engages once accumulated rate × time exceeds this.",
+                "dry_reset_hours": "When not engaged, zero out the accumulator after this much dry time so old rain doesn't accumulate forever."
+              }
+            },
+            "presence_settings": {
+              "name": "Presence trigger",
+              "data": {
+                "presence_entities": "Presence entities (engaged while any is 'home')"
+              },
+              "data_description": {
+                "presence_entities": "Person, device_tracker, or zone entities. Required when trigger type = Presence. Useful to lock vision-avoidance zones around parked cars while you're home."
+              }
+            }
+          }
+        },
+        "reconfigure": {
+          "title": "Edit zone rule",
+          "description": "Update the rule. The accumulator and any current engagement are preserved.",
+          "data": {
+            "name": "Rule name",
+            "zones": "Zones to lock",
+            "trigger_type": "Trigger type",
+            "duration_hours": "Duration after trigger ends to keep enabled"
+          },
+          "data_description": {
+            "name": "Display label for this rule.",
+            "zones": "No-go zones that get enabled while the rule is engaged. Pick zones from a single device.",
+            "trigger_type": "What activates this rule. Precipitation = accumulated rain/snow rate. Presence = while any selected entity is 'home'.",
+            "duration_hours": "Rolling timer. Each tick the trigger is still active, the timer resets to this value. When it elapses, zones are released."
+          },
+          "sections": {
+            "precipitation_settings": {
+              "name": "Precipitation trigger",
+              "data": {
+                "rate_entity": "Precipitation rate sensor",
+                "event_threshold": "Accumulation threshold to engage",
+                "dry_reset_hours": "Reset accumulator after this much dry time"
+              },
+              "data_description": {
+                "rate_entity": "A sensor reporting current rate (e.g. sensor.openweathermap_rain). Required when trigger type = Precipitation.",
+                "event_threshold": "Same units as the rate sensor. Engages once accumulated rate × time exceeds this.",
+                "dry_reset_hours": "When not engaged, zero out the accumulator after this much dry time so old rain doesn't accumulate forever."
+              }
+            },
+            "presence_settings": {
+              "name": "Presence trigger",
+              "data": {
+                "presence_entities": "Presence entities (engaged while any is 'home')"
+              },
+              "data_description": {
+                "presence_entities": "Person, device_tracker, or zone entities. Required when trigger type = Presence. Useful to lock vision-avoidance zones around parked cars while you're home."
+              }
+            }
+          }
+        }
+      },
+      "error": {
+        "no_zones_loaded": "No no-go zones found on any managed device. Wait for the integration to fetch the map, then try again.",
+        "no_zones_selected": "Pick at least one zone to lock.",
+        "single_device_only": "Pick zones from a single device per rule.",
+        "no_rate_entity": "Trigger type is Precipitation but no rate sensor is selected. Open the Precipitation trigger section and pick one.",
+        "no_presence_entities": "Trigger type is Presence but no presence entities are selected. Open the Presence trigger section and pick at least one."
+      },
+      "abort": {
+        "reconfigure_successful": "Zone rule updated."
+      },
+      "selector": {
+        "zone_rule_trigger_type": {
+          "options": {
+            "precipitation": "Precipitation",
+            "presence": "Presence"
+          }
+        }
+      }
     }
   }
 }
