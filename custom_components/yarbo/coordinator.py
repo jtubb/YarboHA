@@ -178,6 +178,30 @@ def _decode_map_data(raw, sn: str):
         )
     return {}
 
+
+def _subscribe_raw_topic(client, sn: str, topic: str, callback) -> None:
+    """Subscribe to an arbitrary device push topic.
+
+    yarbo-data-sdk >= 0.2.2 exposes the public ``subscribe_topic`` helper.
+    On older SDKs it does not exist, so fall back to the private per-device
+    MQTT accessor that the public helper is itself a thin wrapper around.
+    Without this fallback the integration hard-depends on an SDK release and
+    silently loses plan_feedback / cloud_points push when running against an
+    older one.
+
+    Blocking — callers must invoke via async_add_executor_job.
+    """
+    if (subscribe_topic := getattr(client, "subscribe_topic", None)) is not None:
+        subscribe_topic(sn, topic, callback)
+        return
+    if (ensure_mqtt := getattr(client, "_ensure_mqtt_for", None)) is None:
+        raise AttributeError(
+            "SDK exposes neither subscribe_topic nor _ensure_mqtt_for; "
+            "upgrade yarbo-data-sdk to >=0.2.2"
+        )
+    ensure_mqtt(sn).subscribe(topic, callback)
+
+
 class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
     """Coordinate data from Yarbo SDK.
 
@@ -541,11 +565,11 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                         )
 
                 try:
-                    # Public SDK helper (added alongside the _callbacks
-                    # thread-safety fix). Runs entirely in the executor; the
-                    # callback receives (topic_str, payload_bytes).
+                    # Runs entirely in the executor; the callback receives
+                    # (topic_str, payload_bytes). Uses the public SDK helper
+                    # when available, else an older-SDK fallback.
                     await self.hass.async_add_executor_job(
-                        client.subscribe_topic, device.sn, plan_topic,
+                        _subscribe_raw_topic, client, device.sn, plan_topic,
                         _on_plan_feedback,
                     )
                 except Exception as err:
@@ -574,7 +598,7 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
 
                 try:
                     await self.hass.async_add_executor_job(
-                        client.subscribe_topic, device.sn, cloud_topic,
+                        _subscribe_raw_topic, client, device.sn, cloud_topic,
                         _on_cloud_points,
                     )
                 except Exception as err:
