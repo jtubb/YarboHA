@@ -2258,11 +2258,15 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         await self._async_run_zone_rules()
 
         managed_sns = {d.sn for d in self.devices}
-        # The hard guard against two schedules on the same device firing
-        # in the same tick is the integration's own preflight: once the
-        # first start is sent, the second's `on_going_planning > 0` check
-        # will raise. The robot also rejects concurrent plan starts. We
-        # don't need a software mutex here.
+        # One start per device per tick. We used to rely on the preflight's
+        # `on_going_planning > 0` check to reject the second start, but that
+        # value comes from the robot's MQTT StateMSG — cached telemetry that
+        # cannot possibly refresh in the milliseconds between two firings in
+        # the same loop. Every schedule therefore read the same stale "not
+        # planning" snapshot and all of them fired (observed: three plans
+        # started 7ms apart). Track what we have already started here so the
+        # decision never depends on remote state catching up.
+        fired_sns: set[str] = set()
         for spec_raw in schedules:
             if not isinstance(spec_raw, dict):
                 continue
@@ -2272,6 +2276,16 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
             if not sn or not sid or not plan_name:
                 continue
             if sn not in managed_sns:
+                continue
+            if sn in fired_sns:
+                # A plan is already starting on this device this tick.
+                # Leave the rest eligible — they get a fair look next tick,
+                # by which point telemetry reflects the running plan.
+                _LOGGER.debug(
+                    "[scheduler] skipping '%s' on %s: another schedule "
+                    "already fired for this device this tick",
+                    plan_name, sn,
+                )
                 continue
             try:
                 spec = spec_with_defaults(spec_raw)
@@ -2295,6 +2309,10 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                     sn, plan_name, percent=percent,
                     triggered_by="scheduler",
                 )
+                # Claim the device only after the start actually succeeded.
+                # A preflight rejection below means nothing was started, so
+                # a later schedule in this tick may still legitimately try.
+                fired_sns.add(sn)
                 # last_run / resume_percent are managed by the end-of-run
                 # detector in _on_device_status — nothing to do here.
             except HomeAssistantError as err:
