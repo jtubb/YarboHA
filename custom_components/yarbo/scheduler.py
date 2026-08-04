@@ -95,6 +95,7 @@ HoldReason = Literal[
     "eligible",
     "cooldown",
     "paused",
+    "manual-hold",
     "skipped",
     "weather",
     "sleep",
@@ -114,6 +115,7 @@ HOLD_LABELS: dict[HoldReason, str] = {
     "eligible": "Eligible",
     "cooldown": "Cooldown",
     "paused": "Paused",
+    "manual-hold": "Held (manual)",
     "skipped": "Skip queued",
     "weather": "Weather hold",
     "sleep": "Quiet hours",
@@ -218,6 +220,14 @@ class GateInputs:
     # cooldown + weather + snow-insufficient gates so a one-time
     # cleanup run fires after a weather event clears.
     post_hold_armed: bool = False
+
+    # Manual hold: the user pressed Pause, or ended a run by hand. Blocks
+    # the scheduler for this DEVICE until Resume is pressed. Distinct from
+    # ``paused``, which is the schedule/global enable toggle: manual_hold is
+    # set implicitly by a user action on the robot rather than by a settings
+    # change. Without it the next tick simply resumes what the user just
+    # stopped, which is the behaviour this exists to prevent.
+    manual_hold: bool = False
 
     # Time
     now: datetime = field(default_factory=datetime.now)
@@ -332,6 +342,11 @@ def evaluate(g: GateInputs) -> Evaluation:
     # one-shot opt-out the user set explicitly for the next run.
     if g.paused:
         return Evaluation("paused", next_at)
+    # A manual Pause / hand-stop holds the whole device until Resume. This
+    # sits with the other user-intent gates and above every mechanical one:
+    # if the user stopped the mower, nothing environmental should restart it.
+    if g.manual_hold:
+        return Evaluation("manual-hold", next_at)
     if g.skipped:
         return Evaluation("skipped", next_at)
 

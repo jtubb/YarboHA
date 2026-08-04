@@ -88,6 +88,22 @@ class ScheduleStateStore:
         dev = self._data.setdefault("device_states", {}).setdefault(sn, {})
         dev["global_enabled"] = bool(enabled)
 
+    # ---- Per-device manual hold ----------------------------------------
+    #
+    # Set when the user presses Pause or ends a run by hand; cleared by
+    # Resume. Blocks every schedule on the device until then. Persisted, so
+    # a hold survives a Home Assistant restart -- otherwise a restart would
+    # silently resume a run the user had deliberately stopped.
+
+    def get_manual_hold(self, sn: str) -> bool:
+        """Default False — a device is only held after an explicit action."""
+        dev = self._data.get("device_states", {}).get(sn) or {}
+        return bool(dev.get("manual_hold", False))
+
+    def set_manual_hold(self, sn: str, held: bool) -> None:
+        dev = self._data.setdefault("device_states", {}).setdefault(sn, {})
+        dev["manual_hold"] = bool(held)
+
     # ---- Per-schedule state --------------------------------------------
 
     def get_schedule_state(self, sn: str, schedule_id: str) -> dict[str, Any]:

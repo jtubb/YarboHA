@@ -344,6 +344,11 @@ class YarboPausePlanButton(
                 )
         except Exception as exc:
             _LOGGER.error("Failed to pause plan: %s", exc)
+            return
+        # Hold the scheduler until Resume. Without this the next tick sees
+        # an idle robot with a saved resume_percent and restarts the very
+        # plan the user just paused.
+        await self.coordinator.async_set_manual_hold(self._device.sn, True)
 
 
 class YarboResumePlanButton(
@@ -377,6 +382,9 @@ class YarboResumePlanButton(
                 )
         except Exception as exc:
             _LOGGER.error("Failed to resume plan: %s", exc)
+            return
+        # Release the hold so scheduled runs can fire again.
+        await self.coordinator.async_set_manual_hold(self._device.sn, False)
 
 
 class YarboStopPlanButton(

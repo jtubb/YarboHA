@@ -164,6 +164,46 @@ def _base() -> GateInputs:
     )
 
 
+class ManualHoldTests(unittest.TestCase):
+    """A manual Pause / hand-stop must hold until Resume.
+
+    Regression guard: previously the next tick saw an idle robot with a
+    saved resume_percent and restarted the very plan the user had stopped.
+    """
+
+    def test_manual_hold_blocks_an_otherwise_eligible_schedule(self):
+        g = _base()
+        self.assertEqual(evaluate(g).hold_reason, "eligible")
+        g.manual_hold = True
+        self.assertEqual(evaluate(g).hold_reason, "manual-hold")
+
+    def test_manual_hold_beats_every_mechanical_gate(self):
+        # nothing environmental may override a deliberate stop
+        g = _base()
+        g.manual_hold = True
+        g.robot = RobotSnapshot(online=True, error_code=0, is_busy=False)
+        g.battery_pct = 100
+        g.weather_state = "sunny"
+        g.post_hold_armed = True
+        self.assertEqual(evaluate(g).hold_reason, "manual-hold")
+
+    def test_global_pause_still_outranks_manual_hold(self):
+        g = _base()
+        g.paused = True
+        g.manual_hold = True
+        self.assertEqual(evaluate(g).hold_reason, "paused")
+
+    def test_clearing_the_hold_restores_eligibility(self):
+        g = _base()
+        g.manual_hold = True
+        self.assertEqual(evaluate(g).hold_reason, "manual-hold")
+        g.manual_hold = False
+        self.assertEqual(evaluate(g).hold_reason, "eligible")
+
+    def test_default_is_not_held(self):
+        self.assertFalse(_base().manual_hold)
+
+
 class EvaluatePriorityTests(unittest.TestCase):
     def test_default_inputs_are_eligible(self):
         self.assertEqual(evaluate(_base()).hold_reason, "eligible")

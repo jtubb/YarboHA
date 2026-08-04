@@ -850,6 +850,16 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                             else:
                                 reason = "unknown"
 
+                            # A hand-stop holds the device until Resume.
+                            # Only "user_stopped" qualifies: "completed",
+                            # "error" and "quiet_hours_stop" are not the
+                            # user reaching for the stop button, and holding
+                            # on those would strand the schedule silently.
+                            if reason == "user_stopped":
+                                self.hass.add_job(
+                                    self._async_set_manual_hold, sn, True,
+                                )
+
                             if success:
                                 if plan_id is not None:
                                     self.hass.add_job(
@@ -2063,6 +2073,32 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         if self.data is not None:
             self.async_set_updated_data(self.data)
 
+    async def _async_set_manual_hold(self, sn: str, held: bool) -> None:
+        """Hold / release the whole device after a manual Pause or stop.
+
+        Called from the end-of-run detector (via hass.add_job, because that
+        code runs on the MQTT worker thread) and from the Pause / Resume
+        buttons. Idempotent: a no-op write is skipped so we do not churn the
+        Store or push a pointless coordinator update.
+        """
+        if self._state_store is None:
+            return
+        if self._state_store.get_manual_hold(sn) == bool(held):
+            return
+        self._state_store.set_manual_hold(sn, held)
+        await self._state_store.async_save()
+        _LOGGER.info(
+            "[scheduler] manual hold %s for %s — schedules %s",
+            "SET" if held else "released", sn,
+            "will not fire until Resume" if held else "may fire again",
+        )
+        if self.data is not None:
+            self.async_set_updated_data(self.data)
+
+    async def async_set_manual_hold(self, sn: str, held: bool) -> None:
+        """Public wrapper for the Pause / Resume buttons."""
+        await self._async_set_manual_hold(sn, held)
+
     async def async_set_schedule_enabled(
         self, sn: str, schedule_id: str, enabled: bool
     ) -> None:
@@ -3152,6 +3188,7 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
             paused = True
             skipped = False
             last_run = None
+            manual_hold = False
         else:
             sched_state = store.get_schedule_state(sn, sid)
             paused = (
@@ -3160,6 +3197,7 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
             )
             skipped = sched_state["skip_next"]
             last_run = store.get_last_run(sn, sid)
+            manual_hold = store.get_manual_hold(sn)
 
         # Battery — pull from the same field the battery sensor uses.
         data = self.data.get(sn, {}) if self.data else {}
@@ -3241,6 +3279,7 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         return GateInputs(
             paused=paused,
             skipped=skipped,
+            manual_hold=manual_hold,
             last_run=last_run,
             interval_days=float(spec.get("interval_days", 3.0)),
             weather_state=weather_state,

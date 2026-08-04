@@ -70,6 +70,7 @@
           "eligible": "Eligible",
           "cooldown": "Cooldown",
           "paused": "Paused",
+          "manual-hold": "Held (manual)",
           "skipped": "Skip queued",
           "weather": "Weather hold",
           "sleep": "Quiet hours",
@@ -131,7 +132,7 @@
                 "use_sun_for_sleep": "Also block when the sun is below the threshold"
               },
               "data_description": {
-                "sleep_start": "Local time. Cross-midnight ranges (22:00 \u2192 06:00) work as expected.",
+                "sleep_start": "Local time. Cross-midnight ranges (22:00 → 06:00) work as expected.",
                 "sleep_end": "Local time. Equal to start = always awake.",
                 "use_sun_for_sleep": "When on, the sun-elevation threshold (in Advanced) also gates the run."
               }
@@ -169,7 +170,7 @@
               "data_description": {
                 "pre_run_notify_target": "HA notify services called when this schedule starts a run. Multi-select; pick zero or more (e.g. notify.mobile_app_phone, notify.email). Custom services can be typed in.",
                 "complete_notify_target": "HA notify services called when this schedule's run ends — successful, stopped, or errored. Multi-select.",
-                "post_hold_run": "When weather transitions from holding \u2192 clear, fire one extra cleanup run. Bypasses cooldown + weather + snow gates for that one fire."
+                "post_hold_run": "When weather transitions from holding → clear, fire one extra cleanup run. Bypasses cooldown + weather + snow gates for that one fire."
               }
             },
             "advanced": {
@@ -180,7 +181,7 @@
                 "pre_run_notify_minutes": "Pre-run notification lead time"
               },
               "data_description": {
-                "sun_elevation_threshold": "Negative = below horizon. \u22126\u00b0 = civil twilight; useful for 'after dusk'. Only applies when 'Use sun for sleep' is enabled.",
+                "sun_elevation_threshold": "Negative = below horizon. −6° = civil twilight; useful for 'after dusk'. Only applies when 'Use sun for sleep' is enabled.",
                 "snow_forecast_hours": "How far ahead to sum forecast precipitation for the snow gate. Only applies when 'Minimum forecast snow' is > 0.",
                 "pre_run_notify_minutes": "Reserved for a future delayed-pre-run mode. Currently ignored — the start notification fires when the run begins."
               }
@@ -210,7 +211,7 @@
                 "use_sun_for_sleep": "Also block when the sun is below the threshold"
               },
               "data_description": {
-                "sleep_start": "Local time. Cross-midnight ranges (22:00 \u2192 06:00) work as expected.",
+                "sleep_start": "Local time. Cross-midnight ranges (22:00 → 06:00) work as expected.",
                 "sleep_end": "Local time. Equal to start = always awake.",
                 "use_sun_for_sleep": "When on, the sun-elevation threshold (in Advanced) also gates the run."
               }
@@ -248,7 +249,7 @@
               "data_description": {
                 "pre_run_notify_target": "HA notify services called when this schedule starts a run. Multi-select.",
                 "complete_notify_target": "HA notify services called when this schedule's run ends — successful, stopped, or errored. Multi-select.",
-                "post_hold_run": "When weather transitions from holding \u2192 clear, fire one extra cleanup run. Bypasses cooldown + weather + snow gates for that one fire."
+                "post_hold_run": "When weather transitions from holding → clear, fire one extra cleanup run. Bypasses cooldown + weather + snow gates for that one fire."
               }
             },
             "advanced": {
@@ -259,7 +260,7 @@
                 "pre_run_notify_minutes": "Pre-run notification lead time"
               },
               "data_description": {
-                "sun_elevation_threshold": "Negative = below horizon. \u22126\u00b0 = civil twilight; useful for 'after dusk'. Only applies when 'Use sun for sleep' is enabled.",
+                "sun_elevation_threshold": "Negative = below horizon. −6° = civil twilight; useful for 'after dusk'. Only applies when 'Use sun for sleep' is enabled.",
                 "snow_forecast_hours": "How far ahead to sum forecast precipitation for the snow gate. Only applies when 'Minimum forecast snow' is > 0.",
                 "pre_run_notify_minutes": "Reserved for a future delayed-pre-run mode. Currently ignored — the start notification fires when the run begins."
               }
