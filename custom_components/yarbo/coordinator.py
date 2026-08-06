@@ -605,6 +605,41 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                     _LOGGER.warning(
                         "cloud_points subscribe failed: %s", err,
                     )
+
+                # ---- explicit stop commands -> manual hold ----------------
+                # Watch what the APP publishes, not what the robot's state
+                # implies. app/stop_plan and app/stop are the user's actual
+                # stop command, so there is nothing to infer: seeing one
+                # means the user stopped the run on purpose, and the
+                # scheduler must not restart it until Resume.
+                #
+                # This replaces an earlier attempt that derived the same
+                # thing from the end-of-run transition. That could not work:
+                # a normal finish, a mid-plan recharge and a hand-stop are
+                # all cur==0/recharging==0 at that moment.
+                #
+                # KNOWN GAP: when the phone is in Bluetooth range the app
+                # routes commands over BLE instead of MQTT, so a BLE-routed
+                # stop never reaches the broker and will not be seen here.
+                def _on_stop_command(topic_str, payload, _sn=device.sn):
+                    _LOGGER.info(
+                        "[scheduler] observed stop command on %s — "
+                        "holding %s until Resume", topic_str, _sn,
+                    )
+                    # MQTT worker thread: add_job hops to the event loop.
+                    self.hass.add_job(self._async_set_manual_hold, _sn, True)
+
+                for _stop_cmd in ("stop_plan", "stop"):
+                    _stop_topic = f"snowbot/{device.sn}/app/{_stop_cmd}"
+                    try:
+                        await self.hass.async_add_executor_job(
+                            _subscribe_raw_topic, client, device.sn,
+                            _stop_topic, _on_stop_command,
+                        )
+                    except Exception as err:
+                        _LOGGER.warning(
+                            "%s subscribe failed: %s", _stop_topic, err,
+                        )
             except YarboSDKError as err:
                 _LOGGER.warning(
                     "data_feedback subscription failed for %s: %s", device.sn, err
@@ -850,16 +885,6 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                             else:
                                 reason = "unknown"
 
-                            # A hand-stop holds the device until Resume.
-                            # Only "user_stopped" qualifies: "completed",
-                            # "error" and "quiet_hours_stop" are not the
-                            # user reaching for the stop button, and holding
-                            # on those would strand the schedule silently.
-                            if reason == "user_stopped":
-                                self.hass.add_job(
-                                    self._async_set_manual_hold, sn, True,
-                                )
-
                             if success:
                                 if plan_id is not None:
                                     self.hass.add_job(
@@ -874,6 +899,21 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                                             self._async_save_resume_percent,
                                             sn, plan_id, resume_pct_saved,
                                         )
+
+                            # NOTE: the manual hold is deliberately NOT set
+                            # from here. reason == "user_stopped" does not
+                            # mean the user stopped anything: at the instant
+                            # of the transition, "finished, driving to dock",
+                            # "paused for recharge, driving to dock" and
+                            # "user stopped it" are all cur==0 / recharging==0
+                            # and indistinguishable. Disambiguation only
+                            # arrives later, so any decision made here is a
+                            # guess — and guessing stranded the scheduler
+                            # after every normal finish. The hold is now set
+                            # from the observed app/stop_plan | app/stop
+                            # command instead (see _subscribe_stop_commands),
+                            # which is an explicit user action rather than an
+                            # inference from ambiguous state.
                             _LOGGER.warning(
                                 "[scheduler] plan ended sn=%s prev=%d cur=%d "
                                 "recharging=%d err=%d active_plan_id=%s "

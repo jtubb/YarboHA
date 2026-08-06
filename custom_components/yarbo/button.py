@@ -381,9 +381,12 @@ class YarboResumePlanButton(
                     self._device.sn, self._device.type_id,
                 )
         except Exception as exc:
+            # Release the hold even if the resume command itself failed:
+            # pressing Resume is the user's intent to release, and the
+            # command legitimately errors when the robot is docked/idle.
+            # Returning early here would leave the device held with no
+            # obvious way out.
             _LOGGER.error("Failed to resume plan: %s", exc)
-            return
-        # Release the hold so scheduled runs can fire again.
         await self.coordinator.async_set_manual_hold(self._device.sn, False)
 
 
