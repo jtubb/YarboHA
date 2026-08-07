@@ -421,6 +421,12 @@ class YarboStopPlanButton(
                 )
         except Exception as exc:
             _LOGGER.error("Failed to stop plan: %s", exc)
+            return
+        # Same intent as a stop issued from the app: the user ended this run
+        # deliberately, so hold the scheduler until Resume. Without this,
+        # stopping from HA behaved differently from stopping in the app,
+        # which observes app/stop_plan and holds.
+        await self.coordinator.async_set_manual_hold(self._device.sn, True)
 
 
 # ---- Recharge button ----
