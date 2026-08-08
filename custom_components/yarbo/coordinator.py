@@ -1879,7 +1879,7 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         self,
         sn: str,
         points: list[dict],
-        type_hint: int = 0,
+        type_hint: int | None = None,
         wake: bool = True,
     ) -> bool:
         """Drive the mower through a sequence of waypoints.
@@ -1893,11 +1893,11 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         one returns planning_status=-23 ("In No-Go Zone") and the mower
         won't move.
 
-        ``type_hint`` is forwarded as the top-level ``type`` field. At
-        meter-scale paths the three observed values (0=transit, 1=in-
-        area, 2=dead-end) behave essentially identically; default 0 is
-        safest. The firmware always computes its own route from the
-        waypoints regardless of this hint.
+        ``type_hint`` is forwarded as the top-level ``type`` field, and
+        is omitted entirely when None (the default). The app's
+        ``MqttPublish::startWayPoint`` builds ``{"points": [...]}`` and
+        nothing else, so sending ``type`` is a divergence from the real
+        client; it is kept only as an opt-in for experiments.
 
         ``wake`` issues two ``set_working_state=1`` pulses first,
         mirroring the mobile app's pre-roll. Set False if you've

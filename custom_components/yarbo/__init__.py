@@ -653,7 +653,11 @@ def _register_crud_services(hass: HomeAssistant) -> None:
                 vol.Optional("phi", default=0.0): vol.Coerce(float),
             }, extra=vol.ALLOW_EXTRA)],
         ),
-        vol.Optional("type", default=0): vol.All(
+        # No default: the app's startWayPoint sends {"points": [...]}
+        # and nothing else, so the field is omitted unless a caller asks
+        # for it explicitly. A defaulted 0 here would put a key on the
+        # wire that the real client never sends.
+        vol.Optional("type"): vol.All(
             vol.Coerce(int), vol.In([0, 1, 2]),
         ),
         vol.Optional("wake", default=True): cv.boolean,
@@ -669,7 +673,7 @@ def _register_crud_services(hass: HomeAssistant) -> None:
         try:
             await coord.async_goto_waypoints(
                 sn=sn, points=points,
-                type_hint=call.data.get("type", 0),
+                type_hint=call.data.get("type"),
                 wake=call.data.get("wake", True),
             )
         except ValueError as err:
