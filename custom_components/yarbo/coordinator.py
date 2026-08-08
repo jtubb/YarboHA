@@ -202,15 +202,25 @@ def _subscribe_raw_topic(client, sn: str, topic: str, callback) -> None:
     ensure_mqtt(sn).subscribe(topic, callback)
 
 
-def _publish_raw_topic(client, sn: str, topic: str, payload: bytes) -> None:
-    """Publish to a device topic on the broker that serves THAT device.
+def _publish_raw_topic(client, sn: str, topic: str, payload: dict) -> None:
+    """Publish a command dict to a device topic, encoded for THAT device.
 
-    There is no ``client._mqtt``: the SDK keeps ``_legacy_mqtt`` and
-    ``_new_mqtt`` and picks between them per device via
-    ``_ensure_mqtt_for(sn)``, because a serial may be on the migrated
-    dedicated cluster or the legacy one. Code that reached for a single
-    global ``_mqtt`` raised AttributeError and silently broke every
-    command that used it (goto_waypoints never published at all).
+    Two SDK internals have to be mirrored here, and getting either wrong
+    fails silently — the broker accepts the publish, the firmware drops
+    it, and nothing is logged anywhere.
+
+    Broker: there is no ``client._mqtt``. The SDK keeps ``_legacy_mqtt``
+    and ``_new_mqtt`` and picks per device via ``_ensure_mqtt_for(sn)``,
+    because a serial may be on the migrated dedicated cluster or the
+    legacy one.
+
+    Encoding: the wire format depends on the DEVICE FIRMWARE, not on the
+    SDK. ``mqtt_publish_command`` sends zlib only for firmware >= 3.9.0
+    and plaintext JSON below it. Calling ``encode_mqtt_payload``
+    unconditionally (as this module used to) hands a zlib blob to older
+    firmware, which cannot parse it and discards the message without a
+    ``data_feedback`` reply. Take the payload as a dict and encode it
+    here so no caller has to remember this.
 
     Blocking — callers must invoke via async_add_executor_job.
     """
@@ -218,7 +228,20 @@ def _publish_raw_topic(client, sn: str, topic: str, payload: bytes) -> None:
         raise AttributeError(
             "SDK exposes no _ensure_mqtt_for; upgrade yarbo-data-sdk"
         )
-    ensure_mqtt(sn).publish(topic, payload)
+    from yarbo_robot_sdk.codec import encode_mqtt_payload, should_compress
+
+    fw = getattr(client, "_firmware_versions", {}).get(sn)
+    if should_compress(fw):
+        encoded = encode_mqtt_payload(payload)
+    else:
+        import json as _json
+
+        encoded = _json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    _LOGGER.debug(
+        "publish → %s payload=%s fw=%s compressed=%s",
+        topic, payload, fw, should_compress(fw),
+    )
+    ensure_mqtt(sn).publish(topic, encoded)
 
 
 class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
@@ -1623,19 +1646,12 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
             )
         payload = dict(zone)
         payload["enable"] = bool(enabled)
-        from yarbo_robot_sdk.codec import encode_mqtt_payload, should_compress
-        import json as _json
-
         topic = f"snowbot/{sn}/app/save_nogozone"
-        fw = getattr(self._client, "_firmware_versions", {}).get(sn)
-        if should_compress(fw):
-            encoded = encode_mqtt_payload(payload)
-        else:
-            encoded = _json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        mqtt = getattr(self._client, "_mqtt", None)
-        if mqtt is None:
+        if self._client is None:
             raise HomeAssistantError("MQTT broker not connected")
-        await self.hass.async_add_executor_job(mqtt.publish, topic, encoded)
+        await self.hass.async_add_executor_job(
+            _publish_raw_topic, self._client, sn, topic, payload,
+        )
         # Optimistic local update so the UI reflects the change
         # immediately. The get_plan_feedback round-trip will reconfirm.
         zone["enable"] = bool(enabled)
@@ -1651,20 +1667,10 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         if self._client is None:
             return
         try:
-            from yarbo_robot_sdk.codec import encode_mqtt_payload, should_compress
-            import json as _json
-
             topic = f"snowbot/{sn}/app/get_plan_feedback"
-            fw = getattr(self._client, "_firmware_versions", {}).get(sn)
-            payload: dict = {}
-            if should_compress(fw):
-                encoded = encode_mqtt_payload(payload)
-            else:
-                encoded = _json.dumps(payload, separators=(",", ":")).encode("utf-8")
-            mqtt = getattr(self._client, "_mqtt", None)
-            if mqtt is None:
-                return
-            await self.hass.async_add_executor_job(mqtt.publish, topic, encoded)
+            await self.hass.async_add_executor_job(
+                _publish_raw_topic, self._client, sn, topic, {},
+            )
         except Exception as err:
             _LOGGER.warning(
                 "plan_feedback request failed for %s: %s", sn, err,
@@ -1718,26 +1724,13 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         self._probe_capture.setdefault(sn, [])
         captured_at_entry = len(self._probe_capture[sn])
 
-        # SDK auto-compresses for FW >= 3.9.0. Reuse its encoder so the
-        # firmware accepts the payload format.
-        try:
-            from yarbo_robot_sdk.codec import encode_mqtt_payload  # type: ignore
-        except Exception:  # noqa: BLE001
-            encode_mqtt_payload = None
-        if encode_mqtt_payload is not None:
-            encoded = await self.hass.async_add_executor_job(
-                encode_mqtt_payload, payload,
-            )
-        else:
-            import json as _json
-            encoded = _json.dumps(payload, separators=(",", ":")).encode(
-                "utf-8"
-            )
-
+        # Encoding is firmware-dependent (zlib only for >= 3.9.0); that
+        # choice lives in _publish_raw_topic so probes and real commands
+        # can never disagree about it.
         published_ok = True
         try:
             await self.hass.async_add_executor_job(
-                _publish_raw_topic, self._client, sn, topic, encoded,
+                _publish_raw_topic, self._client, sn, topic, payload,
             )
             _LOGGER.warning(
                 "[probe] published → %s payload=%s", topic, payload,
@@ -1912,7 +1905,6 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         """
         if not points:
             raise ValueError("points must be a non-empty list")
-        from yarbo_robot_sdk.codec import encode_mqtt_payload
         if self._client is None:
             raise RuntimeError("MQTT client not connected")
         if wake:
@@ -1920,7 +1912,7 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                 await self.hass.async_add_executor_job(
                     _publish_raw_topic, self._client, sn,
                     f"snowbot/{sn}/app/set_working_state",
-                    encode_mqtt_payload({"state": 1}),
+                    {"state": 1},
                 )
                 await asyncio.sleep(0.6)
         body: dict = {"points": points}
@@ -1929,7 +1921,7 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         await self.hass.async_add_executor_job(
             _publish_raw_topic, self._client, sn,
             f"snowbot/{sn}/app/start_way_point",
-            encode_mqtt_payload(body),
+            body,
         )
         _LOGGER.info(
             "[waypoints] published %d point(s) to %s (type=%s)",
