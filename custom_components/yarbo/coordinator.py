@@ -202,6 +202,25 @@ def _subscribe_raw_topic(client, sn: str, topic: str, callback) -> None:
     ensure_mqtt(sn).subscribe(topic, callback)
 
 
+def _publish_raw_topic(client, sn: str, topic: str, payload: bytes) -> None:
+    """Publish to a device topic on the broker that serves THAT device.
+
+    There is no ``client._mqtt``: the SDK keeps ``_legacy_mqtt`` and
+    ``_new_mqtt`` and picks between them per device via
+    ``_ensure_mqtt_for(sn)``, because a serial may be on the migrated
+    dedicated cluster or the legacy one. Code that reached for a single
+    global ``_mqtt`` raised AttributeError and silently broke every
+    command that used it (goto_waypoints never published at all).
+
+    Blocking — callers must invoke via async_add_executor_job.
+    """
+    if (ensure_mqtt := getattr(client, "_ensure_mqtt_for", None)) is None:
+        raise AttributeError(
+            "SDK exposes no _ensure_mqtt_for; upgrade yarbo-data-sdk"
+        )
+    ensure_mqtt(sn).publish(topic, payload)
+
+
 class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
     """Coordinate data from Yarbo SDK.
 
@@ -1688,7 +1707,7 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
             unexpected name.
           - ``topic``: the resolved MQTT topic string we published to.
         """
-        if self._client is None or not self._client._mqtt:
+        if self._client is None:
             raise RuntimeError("MQTT client not connected")
         topic = f"snowbot/{sn}/app/{topic_name}"
         match_name = response_topic or topic_name
@@ -1718,7 +1737,7 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         published_ok = True
         try:
             await self.hass.async_add_executor_job(
-                self._client._mqtt.publish, topic, encoded,
+                _publish_raw_topic, self._client, sn, topic, encoded,
             )
             _LOGGER.warning(
                 "[probe] published → %s payload=%s", topic, payload,
@@ -1894,26 +1913,27 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         if not points:
             raise ValueError("points must be a non-empty list")
         from yarbo_robot_sdk.codec import encode_mqtt_payload
+        if self._client is None:
+            raise RuntimeError("MQTT client not connected")
         if wake:
-            await self.hass.async_add_executor_job(
-                self._client._mqtt.publish,
-                f"snowbot/{sn}/app/set_working_state",
-                encode_mqtt_payload({"state": 1}),
-            )
-            await asyncio.sleep(0.6)
-            await self.hass.async_add_executor_job(
-                self._client._mqtt.publish,
-                f"snowbot/{sn}/app/set_working_state",
-                encode_mqtt_payload({"state": 1}),
-            )
-            await asyncio.sleep(0.6)
+            for _ in range(2):
+                await self.hass.async_add_executor_job(
+                    _publish_raw_topic, self._client, sn,
+                    f"snowbot/{sn}/app/set_working_state",
+                    encode_mqtt_payload({"state": 1}),
+                )
+                await asyncio.sleep(0.6)
         body: dict = {"points": points}
         if type_hint is not None:
             body["type"] = int(type_hint)
         await self.hass.async_add_executor_job(
-            self._client._mqtt.publish,
+            _publish_raw_topic, self._client, sn,
             f"snowbot/{sn}/app/start_way_point",
             encode_mqtt_payload(body),
+        )
+        _LOGGER.info(
+            "[waypoints] published %d point(s) to %s (type=%s)",
+            len(points), sn, type_hint,
         )
         return True
 
