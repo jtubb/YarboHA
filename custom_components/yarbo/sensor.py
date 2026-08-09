@@ -125,20 +125,18 @@ async def async_setup_entry(
 
     async_add_entities(entities)
 
-    # Per-schedule status sensors — added per subentry so HA can
-    # surgically remove them when a schedule subentry is deleted.
+    # Per-schedule / per-zone-rule status sensors. No
+    # config_subentry_id — see the note in button.py: subentry
+    # association moves the shared mower device and detaches it from
+    # the main entry under HA >= 2026.8.
     for device in coordinator.devices:
         for spec in coordinator.schedules_for(device.sn):
-            sub_id = coordinator.subentry_id_for("schedule", spec.get("id"))
             async_add_entities(
                 [YarboScheduleStatusSensor(coordinator, device, spec)],
-                config_subentry_id=sub_id,
             )
         for rule in coordinator.zone_rules_for(device.sn):
-            sub_id = coordinator.subentry_id_for("zone_rule", rule.get("id"))
             async_add_entities(
                 [YarboZoneRuleStatusSensor(coordinator, device, rule)],
-                config_subentry_id=sub_id,
             )
 
 

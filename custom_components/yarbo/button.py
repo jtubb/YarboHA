@@ -56,17 +56,21 @@ async def async_setup_entry(
         entities.append(YarboRechargeButton(coordinator, device))
     async_add_entities(entities)
 
-    # Per-schedule action buttons — added per subentry so HA can
-    # remove them surgically when the user deletes a schedule.
+    # Per-schedule action buttons. These deliberately do NOT pass
+    # config_subentry_id: they attach to the shared mower device, and
+    # HA allows a device to belong to only one subentry. With one
+    # subentry per schedule, every add moved the device to a different
+    # one; as of 2026.8 that move detaches it from the main config
+    # entry, which purges every main-entry entity on the next reload.
+    # Losing surgical subentry cleanup is the lesser cost — stale
+    # entities are pruned on reload instead.
     for device in coordinator.devices:
         for spec in coordinator.schedules_for(device.sn):
-            sub_id = coordinator.subentry_id_for("schedule", spec.get("id"))
             async_add_entities(
                 [
                     YarboScheduleRunNowButton(coordinator, device, spec),
                     YarboScheduleSkipNextButton(coordinator, device, spec),
                 ],
-                config_subentry_id=sub_id,
             )
 
 

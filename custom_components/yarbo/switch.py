@@ -57,14 +57,13 @@ async def async_setup_entry(
 
     async_add_entities(entities)
 
-    # Per-schedule pause — added per subentry so HA can remove it
-    # surgically when the schedule is deleted.
+    # Per-schedule pause. No config_subentry_id — see the note in
+    # button.py: subentry association moves the shared mower device
+    # and detaches it from the main entry under HA >= 2026.8.
     for device in coordinator.devices:
         for spec in coordinator.schedules_for(device.sn):
-            sub_id = coordinator.subentry_id_for("schedule", spec.get("id"))
             async_add_entities(
                 [YarboScheduleEnabledSwitch(coordinator, device, spec)],
-                config_subentry_id=sub_id,
             )
 
 

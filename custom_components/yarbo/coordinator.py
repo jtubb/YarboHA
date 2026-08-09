@@ -2080,10 +2080,15 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
     def subentry_id_for(self, subentry_type: str, item_id: str) -> str | None:
         """Return HA's subentry_id for a schedule/rule with our internal id.
 
-        Platforms call ``async_add_entities(..., config_subentry_id=X)``
-        so HA can clean up the entities when a subentry is removed.
-        Mapping is uniqueness-of-(subentry_type, our id stored in
-        subentry.unique_id).
+        Currently unused. Platforms used to pass the result as
+        ``async_add_entities(..., config_subentry_id=X)`` so HA would
+        clean up entities when a subentry was removed, but a device may
+        belong to only one subentry: with one subentry per schedule,
+        each add moved the shared mower device, and under HA >= 2026.8
+        that detaches it from the main config entry and purges every
+        main-entry entity. Kept because the mapping is still the
+        correct way to resolve a subentry id if entities are ever given
+        their own per-subentry devices.
         """
         for sub in self.entry.subentries.values():
             if sub.subentry_type == subentry_type and sub.unique_id == item_id:
