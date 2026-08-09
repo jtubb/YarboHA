@@ -28,6 +28,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async_register_websockets(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Entities are re-registered above, so anything left over belongs to a
+    # schedule or zone rule the user deleted. HA can't do this for us: that
+    # would need config_subentry_id on the adds, which moves the shared
+    # mower device between subentries and wipes the main entry's entities.
+    if (pruned := coordinator.async_prune_orphaned_subentry_entities()):
+        _LOGGER.info(
+            "[cleanup] removed %d entity(ies) for deleted schedules/zone rules",
+            pruned,
+        )
+
     _register_set_nogozone_enabled(hass)
     _register_export_altitude_mesh(hass)
     _register_get_altitude_mesh(hass)

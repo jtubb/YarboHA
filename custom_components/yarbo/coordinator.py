@@ -12,7 +12,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
-from homeassistant.core import CALLBACK_TYPE, HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
@@ -2120,6 +2120,55 @@ class YarboDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
     def schedules_for(self, sn: str) -> list[ScheduleSpec]:
         """Configured schedules belonging to one device."""
         return [s for s in self.schedules if s.get("device_sn") == sn]
+
+    @callback
+    def async_prune_orphaned_subentry_entities(self) -> int:
+        """Drop entities whose schedule / zone rule no longer exists.
+
+        Platforms used to pass ``config_subentry_id`` so HA removed
+        these automatically when a subentry was deleted, but a device
+        may belong to only one subentry and every schedule is its own —
+        each add moved the shared mower device and, under HA >= 2026.8,
+        detached it from the main entry and purged everything. Doing the
+        cleanup here is what buys back the ability to keep one device.
+
+        MUST run after the platforms have registered their entities:
+        anything still configured is re-added during forward_entry_setups,
+        so an entity that is absent from the current specs at this point
+        genuinely belongs to a deleted subentry.
+
+        Matching is by unique_id prefix rather than entity_id, since
+        entity_ids follow the plan name and the user may rename them.
+        """
+        from homeassistant.helpers import entity_registry as er
+
+        ent_reg = er.async_get(self.hass)
+        removed = 0
+        for device in self.devices:
+            sn = device.sn
+            sched_prefix = f"{sn}_schedule_"
+            rule_prefix = f"{sn}_zone_rule_"
+            # Trailing "_" matters: it keeps "<sn>_schedule_<id>_status"
+            # from matching a different schedule whose id is a prefix of
+            # this one, and keeps "<sn>_scheduler_enabled" (the global
+            # switch) from looking like a per-schedule entity.
+            live = {f"{sched_prefix}{s.get('id')}_" for s in self.schedules_for(sn)}
+            live |= {f"{rule_prefix}{r.get('id')}_" for r in self.zone_rules_for(sn)}
+            for entity in list(ent_reg.entities.values()):
+                if entity.config_entry_id != self.entry.entry_id:
+                    continue
+                uid = entity.unique_id or ""
+                if not uid.startswith((sched_prefix, rule_prefix)):
+                    continue
+                if any(uid.startswith(p) for p in live):
+                    continue
+                _LOGGER.info(
+                    "[cleanup] removing %s — its schedule/zone rule is gone",
+                    entity.entity_id,
+                )
+                ent_reg.async_remove(entity.entity_id)
+                removed += 1
+        return removed
 
     async def async_set_global_enabled(self, sn: str, enabled: bool) -> None:
         """Pause / resume all schedules on one device."""

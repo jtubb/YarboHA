@@ -12,10 +12,16 @@ more than it looks.
 from __future__ import annotations
 
 import re
+import sys
 import unittest
 from pathlib import Path
 
 COMPONENT = Path(__file__).resolve().parent.parent / "custom_components" / "yarbo"
+
+# Allow importing the pure-logic modules without installing the package.
+sys.path.insert(0, str(COMPONENT))
+
+from scheduler import schedule_unique_id  # type: ignore[import-not-found]  # noqa: E402
 
 # Platforms that attach entities to the shared per-mower device.
 PLATFORM_FILES = [
@@ -112,6 +118,45 @@ class PayloadEncodingTests(unittest.TestCase):
                 window,
                 f"coordinator.py:{i} encodes without a firmware check: "
                 f"{line.strip()}",
+            )
+
+
+class SubentryPruneMatchingTests(unittest.TestCase):
+    """Prefix rules behind async_prune_orphaned_subentry_entities.
+
+    The prune deletes registry entries, so a matching mistake silently
+    destroys live entities rather than merely leaving junk behind.
+    """
+
+    SN = "24460102MT0F9629"
+
+    def _sched_prefix(self, schedule_id: str) -> str:
+        return f"{self.SN}_schedule_{schedule_id}_"
+
+    def test_unique_id_starts_with_its_own_live_prefix(self) -> None:
+        uid = schedule_unique_id(self.SN, "abc123", "status")
+        self.assertTrue(uid.startswith(self._sched_prefix("abc123")))
+
+    def test_global_scheduler_switch_is_not_a_schedule_entity(self) -> None:
+        # "<sn>_scheduler_enabled" shares the first 8 characters of
+        # "schedule_"; without the trailing underscore it would be
+        # treated as a per-schedule entity and deleted every reload.
+        self.assertFalse(
+            f"{self.SN}_scheduler_enabled".startswith(f"{self.SN}_schedule_")
+        )
+
+    def test_id_that_prefixes_another_id_does_not_cross_match(self) -> None:
+        # A surviving schedule "ab" must not keep a deleted "abcd" alive.
+        live = self._sched_prefix("ab")
+        deleted_uid = schedule_unique_id(self.SN, "abcd", "status")
+        self.assertFalse(deleted_uid.startswith(live))
+
+    def test_all_suffixes_in_use_match_their_prefix(self) -> None:
+        for suffix in ("status", "run_now", "skip_next", "enabled"):
+            uid = schedule_unique_id(self.SN, "deadbeef", suffix)
+            self.assertTrue(
+                uid.startswith(self._sched_prefix("deadbeef")),
+                f"suffix {suffix!r} would not be pruned with its schedule",
             )
 
 
